@@ -1,6 +1,6 @@
 # node は、(apt-get ではなく) Node.js 公式サイトが配布するインストーラーを使った時のように、
-# ファイルは /usr/local/ 以下に散在(/bin, /lib, /share など)している。ちなみに、
-# 専属パッケージ管理ツールの apt-get を使うと /usr/ 内にインストールされる。
+# ファイルは /usr/local/ 以下に散在(/bin, /lib, /share など)している。(ちなみに、
+# apt-get を使ってコマンドやアプリをインストールした場合は /usr/ 内にインストールされる。)
 # また、/usr は "Unix System Resources" の略で、プログラム・ライブラリ・ドキュメント類を置くディレクトリ。
 FROM node:22-trixie
 
@@ -69,14 +69,13 @@ RUN uv python install 3.13 \
     && chown -R node:node /opt/uv-venv /opt/uv-python
 
 # npm のグローバルインストール先をボリューム( /home/node )の外である
-# /opt/npm-global に作成し、所有者を node に変更しておく。
+# /opt/npm-global に作成し、所有者を node に変更しておく。/opt/の権限は 755
 # -p は、--parents の略。親ディレクトリも一緒に作る、もし既に存在してもエラーにしない（冪等性）
 # -R は recursive で、ここでは空ディレクトリを新たに作っているので不要だが、慣習的に書かれることが多い。
 # /opt はデフォルトで存在するディレクトリ。(なので本来的には -p はなくても良い)。ownerは当然 root, 権限は 755
 RUN mkdir -p /opt/npm-global \
     && chown -R node:node /opt/npm-global
 
-# PATH と NPM_CONFIG_PREFIX を /opt/npm-global に向ける
 # npm install -g は NPM_CONFIG_PREFIX で指定した場所に書き込む（デフォルトは /usr/local/lib/node_modules）
 # NPM_CONFIG_PREFIX の値は npm を実行する際に必ず読み込まれ、グローバルインストールの保存先として設定。
 # これにより、パッケージ本体は /opt/npm-global/lib/node_modules/、実行コマンドは /opt/npm-global/bin/
@@ -84,13 +83,14 @@ RUN mkdir -p /opt/npm-global \
 # ちなみに、このように Dockerfile の中で ENV として設定した変数は、イメージ(config の Config.Env)に焼き込まれる。
 # ランタイム(dockerd/containerd)は、コンテナ起動時の PID 1 (即時スリープ状態になる)だけでなく、
 # 後から docker exec で入ってくるプロセス(VS Code Server やターミナル等)にも、同じ Config.Env を適用する。
-# そこから生まれる子プロセス(シェル・npm・python 等)は fork/exec の継承で受け継ぐ。
+# そこから生まれる子プロセス(シェル・npm・python 等)は fork/exec の継承でこのENVを受け継ぐ。
+# SHELL=/bin/zsh については、VSCode が zsh を使うようにする設定。これを書かないと bash が使われる。
 ENV NPM_CONFIG_PREFIX=/opt/npm-global \
     PATH="/opt/npm-global/bin:/opt/uv-venv/bin:/home/node/.local/bin:${PATH}" \
     SHELL=/bin/zsh
 
 # node グループに sudo 権限を付与
-# まず、/etc/sudoers.d/ は apt-get で sudo を入れると自動で作られる。そして、
+# まず、/etc/sudoers.d/ は apt-get で sudo を入れると自動で作られる。そして、そこに
 # /etc/sudoers.d/node という新しい設定ファイルを作り、そこに node ALL=(ALL) NOPASSWD:ALL を書き込む。
 # chmod 0440 で、そのファイルを「管理者以外は書き換えもできない厳重な状態」にする
 # nodeユーザーだけは特別に、パスワードなしでsudoを使えるようにしてあげる
