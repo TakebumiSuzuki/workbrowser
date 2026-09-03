@@ -86,7 +86,7 @@ RUN mkdir -p /opt/npm-global \
 # そこから生まれる子プロセス(シェル・npm・python 等)は fork/exec の継承でこのENVを受け継ぐ。
 # SHELL=/bin/zsh については、VSCode が zsh を使うようにする設定。これを書かないと bash が使われる。
 ENV NPM_CONFIG_PREFIX=/opt/npm-global \
-    PATH="/opt/npm-global/bin:/opt/uv-venv/bin:/home/node/.local/bin:${PATH}" \
+    PATH="/opt/npm-global/bin:/opt/uv-venv/bin:/opt/antigravity/bin:/home/node/.local/bin:${PATH}" \
     SHELL=/bin/zsh
 
 # node グループに sudo 権限を付与
@@ -128,6 +128,14 @@ RUN mkdir -p /opt/ms-playwright \
     && npx -y playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
+# Antigravity CLI (agy) の配置先を先に作り、node 所有にしておく（/opt は root 所有 755 のままだと
+# node が書けず、インストーラが "Permission denied when attempting to create ..." で失敗する）。
+# npm-global / ms-playwright とまったく同じ考え方。
+# agy は「通常実行時にバックグラウンドで自己更新する」仕様のため、ビルド時だけでなく実行時も
+# node がこのディレクトリに書ける必要がある（＝ sudo で root 所有のまま置いてはいけない）。
+RUN mkdir -p /opt/antigravity/bin \
+    && chown -R node:node /opt/antigravity
+
 # コンテナが起動した時のメインプロセス(pid1)を実行する人
 USER node
 
@@ -154,6 +162,18 @@ RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbo
 # 代償としてヘッド付き(--headed)操作と channel='chromium'（新ヘッドレスモード）は使えなくなる。
 # それらが必要になったら --only-shell を外す。
 RUN playwright-cli install-browser chromium --only-shell
+
+# Antigravity CLI (agy) を公式インストーラで導入する。npm パッケージではなく Go 製の単一バイナリで、
+# install.sh は「manifest (JSON) を引く → tar.gz を取得 → SHA512 を照合 → 展開して配置」を行うだけで、
+# コンパイルはしない。uv / ruff を公式配布バイナリで入れているのと実質同じことをしている。
+# 置かれるのは $DIR/agy というファイル 1 個だけ。既に存在する場合は何もせず正常終了する（冪等）。
+# `bash -s --` は、パイプで流し込んだスクリプトに引数を渡すための書き方。
+# install.sh が受け付けるオプションは -d/--dir と -h/--help の 2 つだけで、それ以外はエラーになる。
+# アーキテクチャ (x64 / arm64) と libc (glibc / musl) は install.sh 側が uname で自動判定する。
+# 配置先 /opt/antigravity/bin は上の root 段階で node 所有にしてあるので、ここでは sudo 不要で書ける。
+# ダウンロードの一時置き場は $HOME/.cache/antigravity/staging で、これは node の HOME 配下のため問題ない。
+# なお展開後のバイナリは約 185MB あり、その分イメージが大きくなる。
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt/antigravity/bin
 
 # WORKDIR は指定したディレクトリが存在しなければ自動的に作成し、途中の親ディレクトリも含めて作ってくれる。
 # mkdir -p に近い挙動。

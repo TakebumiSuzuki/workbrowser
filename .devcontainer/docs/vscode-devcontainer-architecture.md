@@ -62,7 +62,7 @@ flowchart TB
         server --> file
     end
 
-    localext -->|"Server本体をコピー→<br/>docker execで起動"| server
+    localext -->|"Server本体を名前付きボリューム<br/>(プロジェクト共有の'vscode'という名前)にコピー→<br/>docker execで起動"| server
     renderer <-->|"docker execで立てた<br/>中継役ごしに通信"| server
 ```
 
@@ -75,11 +75,13 @@ flowchart TB
 | テーマ等UI系の拡張機能 | ローカル（拡張機能ホスト） | 変わらずローカル |
 | Git連携・言語サーバー等 | ローカル（拡張機能ホスト） | **コンテナ内に新設**（リモート拡張機能ホストが担当） |
 | ファイルの読み書き | ローカル | **コンテナ内に新設**（VS Code Serverが担当） |
-| ターミナル/VS Code Serverの実行ユーザー | ローカルログインユーザー | `remoteUser`（devcontainer.json。未指定なら`containerUser`＝Dockerfile最後の`USER`を継承） |
+| ターミナル/VS Code Serverの実行ユーザー | ローカルログインユーザー | `remoteUser`（未指定なら`containerUser`＝Dockerfile最後の`USER`） |
 
 ## 補足:docker execによる通信と実行ユーザー
 
-- **VS Code Serverの初回起動は`docker exec`。** ローカル側のDev Containers拡張が、コピーしておいたServer本体を`docker exec`でコンテナ内に起動する。
+- **VS Code Serverの初回起動は`docker exec`。** ローカル側のDev Containers拡張が、名前付きボリューム(プロジェクト共有の'vscode'という名前)にコピーしておいたServer本体を`docker exec`でコンテナ内に起動する。
+
+  ただし`docker exec`で起動されるのはServer本体だけではない。後述する中継プロセス用のシェルなど、起動時には複数回の`docker exec`が走る。
 
 - **起動後の通信も入口は`docker exec`だが、実体はもう一段細かい。** VS Code Serverは起動すると、コンテナの中のポート（`127.0.0.1`の空き番号）で待ち受ける。`docker exec`で起動されるのは会話の中身を運ぶ本体ではなく、**その待ち受けポートへ橋渡しするだけの細い中継役プロセス**である。
 
@@ -126,7 +128,7 @@ devcontainerを使っても、画面表示（レンダラー）とアプリ管�
       │      POST /exec/{id}/start       … 実行開始＋入出力を接続
       ▼
 [dockerd（Dockerエンジン）]  ← 常時待ち受けているデーモン(常駐プログラム)
-      │ ③ 指定されたコンテナの中に、新しいプロセスを1個作る
+      │ ③ 指定されたコンテナの中に、新しいプロセス(この例では bash プロセス)を1個作る
       ▼
 [コンテナ内の新プロセス]  ← PID 1 の子ではなく、独立した新入り
       │ ④ 新プロセスのstdin/stdout/stderrをdockerdが握り、
@@ -142,13 +144,6 @@ devcontainerを使っても、画面表示（レンダラー）とアプリ管�
 `docker exec -it <コンテナ> bash` の `bash` は、**コンテナのファイルシステムにある`/bin/bash`を実行しろ**という指示。特殊な仕組みではなく、ごく普通のバイナリがごく普通に起動されるだけ。
 
 そのため、イメージに`bash`が入っていなければ`executable file not found`で失敗する（alpine系イメージでよく起きる）。
-
-### `docker attach`との違い
-
-| コマンド | つながる相手 |
-|---|---|
-| `docker exec` | **新しく作られたプロセス**（実行するたびに増える） |
-| `docker attach` | コンテナの**PID 1**（もともと動いている本体プロセス） |
 
 ### 本プロジェクトに効いてくる性質2つ
 

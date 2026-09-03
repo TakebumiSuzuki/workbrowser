@@ -114,6 +114,7 @@
       "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
 
-  "editor.hover.delay": 500,
+//   "editor.hover.delay": 500,
+  "editor.hover.enabled": "onKeyboardModifier",
   "chat.disableAIFeatures": true
 }
