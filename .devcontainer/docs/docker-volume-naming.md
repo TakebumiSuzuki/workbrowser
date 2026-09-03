@@ -22,10 +22,6 @@ Docker Engine（実際にボリュームを作る本体）には、**「プロ�
 
 名前の渡し方は**フラグではない**点に注意。`docker volume create` では位置引数（フラグ名を付けずに直接書く引数）、`docker run` では `-v` の値のコロンより左側。
 
-公式ドキュメントの記載:
-
-> If a name is not specified, Docker generates a random name.
-
 ### 匿名ボリュームがなぜ困るか
 
 名前を省略すると使い捨てのボリュームができる。コンテナを作り直すと、**前のボリュームの名前が分からないので二度と掴めない**。永続化したいデータには必ず名前を付ける。
@@ -48,8 +44,6 @@ volumes:
 
 名前空間を分けるため。接頭辞が無いと、世の中の全ての `docker-compose.yml` が書きがちな `db-data` や `postgres-data` が、1台のマシン上で同じ1つのボリュームを取り合ってしまう。
 
-> マンションで例えると、`claude-state` は「301号室」。棟名（プロジェクト名）と組み合わせて初めて一意の住所になる。Docker単体は一軒家なので、表札の文字がそのまま住所。
-
 ### プロジェクト名（＝接頭辞）の決まり方
 
 プロジェクト名は**compose ファイルの中身ではなく、コマンドを実行するときの文脈**で決まる。優先順位は上から順に:
@@ -57,7 +51,7 @@ volumes:
 ```
 ① -p / --project-name フラグ
 ② COMPOSE_PROJECT_NAME 環境変数
-③ compose ファイルのトップレベル name:
+③ docker-compose.yml のトップレベルに書く name: の値
 ④ compose ファイルがあるディレクトリ名
 ⑤ カレントディレクトリ名（compose ファイル未指定のとき）
 ```
@@ -68,21 +62,13 @@ volumes:
 
 | 書き方 | 実際にできる名前 | 誰が作るか |
 |---|---|---|
-| `claude-state:` | `<プロジェクト名>_claude-state` | Compose |
+| `claude-state:` | `<プロジェクト名>_claude-state`（接頭辞が付いてしまう） | Compose |
 | `claude-state:`<br>&nbsp;&nbsp;`name: my-vol` | `my-vol`（接頭辞なし） | Compose |
 | `claude-state:`<br>&nbsp;&nbsp;`external: true` | `claude-state`（接頭辞なし） | **事前に自分で作っておく** |
-| service側の `- ./.zshrc:/home/node/.zshrc` | ボリュームではない（bind mount = ホストのファイルを直接見せる方式。名前は存在しない） | — |
-| service側の `- /data`（左側なし） | ランダムな名前（匿名） | Docker |
-
-ボリューム定義の中の `name:` について、公式ドキュメントの記載:
-
-> The name is used as is and is not scoped with the stack name.
-
-（その名前がそのまま使われ、スタック名でスコープされない）
 
 ## 3. devcontainerの場合
 
-**ボリュームを作るのはあくまでDockerで、devcontainerは何も割り込んでいない。**devcontainerが関係するのは、**`docker compose` コマンドを実際に打っているのがDev Containers拡張だから**。
+**ボリューム自体を作るのはあくまでDocker。**devcontainerが関係するのは、**`docker compose` コマンドを実際に打っているのがDev Containers拡張だから**。
 
 ```
 VS Code の Dev Containers 拡張（Mac側で動く）
@@ -99,30 +85,20 @@ Docker Compose  … -p で渡された名前を接頭辞にする
 Docker Engine   … cc-dev-container_devcontainer_claude-state を作る
 ```
 
-> レストランで例えると、`docker-compose.yml` は**レシピ**、Dockerは**シェフ**。レシピには「タッパーに入れる」としか書いていない。タッパーに貼る**名札**はレシピにもシェフにも書かれておらず、**注文票の席番号**から決まる。devcontainer拡張は注文票を書くウェイターであり、料理を作るのはシェフ（Docker）。
-
 `-p` はCompose本来の優先順位で最上位なので、**devcontainerが計算した名前が必ず勝つ。**
 
-### devcontainerが接頭辞をどう計算するか
+### では、devcontainerが接頭辞をどう計算するか
 
 devcontainers/cli の `src/spec-node/dockerCompose.ts` の `getProjectName()` より:
 
 ```
 ① COMPOSE_PROJECT_NAME 環境変数
 ② カレントディレクトリの .env 内の COMPOSE_PROJECT_NAME
-③ compose ファイルのトップレベル name:
+③ docker-compose.yml のトップレベルに書く name: の値
 ④ compose ファイルが <ワークスペース>/.devcontainer/ にある場合
      → `<ワークスペースのフォルダ名>_devcontainer`
      * ここで、ワークスペースというのは、VS Codeで「開いた」Mac側のフォルダ名のこと
 ⑤ それ以外 → compose ファイルがあるフォルダ名
-```
-
-④の該当箇所（原文ママ）:
-
-```ts
-if (equalPaths(cliHost.platform, workingDir, cliHost.path.join(configDir, '.devcontainer'))) {
-    return toProjectName(`${cliHost.path.basename(configDir)}_devcontainer`, newProjectName);
-}
 ```
 
 このリポジトリは④に当たるので、`cc-dev-container` + `_devcontainer` = **`cc-dev-container_devcontainer`**。
@@ -148,59 +124,6 @@ if (equalPaths(cliHost.platform, workingDir, cliHost.path.join(configDir, '.devc
 
 `docker-compose.yml` のコメントにある警告はこの挙動を指しており、**正しい。**
 
-## 4. このプロジェクトではどうするか
-
-### 選択肢A：現状維持（`name:` を書かない）
-
-- devcontainer公式テンプレート（postgres等）も `name:` を書いていない。書かなくてもdevcontainerが④で自動的に名前を付けるため。
-- 既存ボリュームがそのまま使われるので、**移行作業ゼロ**。
-- 代償：手動 `docker compose up` したときだけ別ボリュームになる。フォールバック用途と割り切るなら実害は小さい。
-
-### 選択肢B：トップレベルに `name:` を書く
-
-```yaml
-name: cc-dev-container
-
-services:
-  claude-code:
-    ...
-```
-
-- 両ルートでプロジェクト名が `cc-dev-container` に統一され、**同じボリュームを共有する**。
-- `_devcontainer` の接尾辞が消え、コンテナ名・ネットワーク名も変わる。
-- **Mac(ホスト)側のプロジェクトフォルダ**（VS Codeで開く、`.devcontainer/` の親フォルダ）をリネームしても、ボリュームを見失わなくなる。プロジェクト名がフォルダ名から決まらなくなるため。
-- **代償：既存ボリュームが孤児になる。** `cc-dev-container_devcontainer_claude-state` にはClaude CodeのOAuthトークン・設定・履歴が入っているため、切り替えた瞬間に空のボリュームが新規作成され、**再ログインが必要**になる。古いボリュームは消えずに残るので、後から手動で移すか削除するか選べる。
-
-中身を移す場合の一般的な手順（Mac側で実行。**この環境では docker CLI が無いため未検証**）:
-
-```bash
-docker volume create cc-dev-container_claude-state
-docker run --rm \
-  -v cc-dev-container_devcontainer_claude-state:/from \
-  -v cc-dev-container_claude-state:/to \
-  alpine sh -c "cp -a /from/. /to/"
-```
-
-### 判断の材料
-
-| 重視すること | 向いている選択肢 |
-|---|---|
-| 手動 `docker compose up` でも認証・履歴を引き継ぎたい | B |
-| 今の認証状態を壊したくない・移行作業をしたくない | A |
-| devcontainerの標準的な書き方に合わせたい | A |
-| Mac側のプロジェクトフォルダ名を変えてもボリュームを維持したい | B |
-
-### 補足：フォルダ名の衝突対策は `name:` ではない
-
-`name:` を書くと名前がハードコードされるため、**同じリポジトリを2箇所にクローンすると必ず衝突する**（現状は「フォルダ名が偶然一致したときだけ衝突」）。衝突を避けたい場合は、クローン先ごとに `.devcontainer/.env` に
-
-```
-COMPOSE_PROJECT_NAME=cc-dev-container-2
-```
-
-を置く方が筋が良い（優先順位①②で `name:` より強い）。`.env` はgit管理外にできるので、クローンごとに違う値を持たせられる。
-
----
 
 ## まとめ
 
@@ -208,7 +131,6 @@ COMPOSE_PROJECT_NAME=cc-dev-container-2
 - **接頭辞はComposeの機能**であり、Docker Engineは接頭辞を知らない。
 - **接頭辞の中身（プロジェクト名）はcomposeファイルの外側で決まる。**`-p` > 環境変数 > `name:` > ディレクトリ名、の順。
 - **devcontainerは `-p` を明示的に渡す呼び出し元**なので、VS Code経由だと `<フォルダ名>_devcontainer` が接頭辞になる。
-- このプロジェクトは、**手動起動との一致を取るならB（`name:` を書く）、現状を壊したくないならA（現状維持）。**移行コストと引き換えの判断。
 
 ## 参照
 
