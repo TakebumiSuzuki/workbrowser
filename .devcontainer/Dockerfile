@@ -147,7 +147,7 @@ USER node
 # デーモンが常駐してブラウザを開いたまま保持し、snapshot で画面状態を見ながら click/fill 等を
 # 継続できる（単発 CLI と違い 1 コマンドごとに閉じない）。スナップショットをディスクに保存する
 # ため MCP 版よりトークン効率が良い。
-RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbox-runtime @playwright/cli@latest
+RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbox-runtime @playwright/cli@latest @openai/codex
 
 # @playwright/cli が要求する「正確なリビジョン」の Chromium 本体を、CLI 純正コマンドで取得する。
 # ここを npx playwright install で代用すると最新版が入る一方、@playwright/cli が内包する
@@ -163,9 +163,8 @@ RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbo
 # それらが必要になったら --only-shell を外す。
 RUN playwright-cli install-browser chromium --only-shell
 
-# Antigravity CLI (agy) を公式インストーラで導入する。npm パッケージではなく Go 製の単一バイナリで、
-# install.sh は「manifest (JSON) を引く → tar.gz を取得 → SHA512 を照合 → 展開して配置」を行うだけで、
-# コンパイルはしない。uv / ruff を公式配布バイナリで入れているのと実質同じことをしている。
+# Antigravity CLI (agy) を公式インストーラで導入する。Go 製の単一バイナリで、uv / ruff を
+# 公式配布バイナリで入れているのとほぼ同じ形式。
 # 置かれるのは $DIR/agy というファイル 1 個だけ。既に存在する場合は何もせず正常終了する（冪等）。
 # `bash -s --` は、パイプで流し込んだスクリプトに引数を渡すための書き方。
 # install.sh が受け付けるオプションは -d/--dir と -h/--help の 2 つだけで、それ以外はエラーになる。
