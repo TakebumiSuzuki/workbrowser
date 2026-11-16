@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+.wxt/
+dist/
+dist-zip/
+.output/
+
+# Local settings, run data and credentials
+.data/
+.env
+.env.*
+!.env.example
+!.env.sample
+.credentials/
+secrets/
+application_default_credentials.json
+*.pem
+*.key
+
+# Test artifacts and logs
+artifacts/
+coverage/
+*.log
+*.tsbuildinfo

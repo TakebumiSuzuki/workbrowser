@@ -1,0 +1,27 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [
+      "chrome",
+      "node"
+    ],
+    "target": "ES2022",
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "noUncheckedIndexedAccess": false
+  },
+  "include": [
+    "src",
+    "entrypoints",
+    "server",
+    "tests",
+    "wxt.config.ts",
+    "vitest.config.ts",
+    "scripts"
+  ]
+}

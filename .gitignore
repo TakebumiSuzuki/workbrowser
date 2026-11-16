@@ -134,3 +134,6 @@ temp/
 
 # ===== Project-local (not versioned) =====
 creation_log.md
+
+# Upstream reference clone; Workbrowser contains the reused code and license.
+/nanobrowser/

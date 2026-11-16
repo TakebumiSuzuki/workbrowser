@@ -1,0 +1,106 @@
+# Workbrowser
+
+日本語の資料は **[ドキュメント一覧](docs/README.md)** から参照してください。[概要・基本仕様](docs/overview.md)、[Workstationsへの開発環境移行](docs/workstations-setup.md)、[本番のIAP・Cloud Run対応](docs/cloud-migration.md) をまとめています。
+
+Chrome extension for autonomous browser research, information extraction and summaries. Give an instruction in English, Japanese, or another language supported by the configured model. Start from the current page or provide a URL; the agent observes pages, chooses tools, follows links/search/pagination, collects information and returns an answer with source URLs.
+
+The UI is in English. Instructions and answers can use any language supported by the configured model; no language selection is needed.
+
+## Company computer setup
+
+See **[会社PCでの導入手順](docs/company-setup.md)**, or **[Workstationsでの開発手順](docs/workstations-setup.md)** when the server runs remotely. The extension and a local development server are both required. Configure the company's Vertex AI project, region and actual Gemini model ID in the server `.env`, authenticate the server, approve target sites in Settings, then use the extension. No AI credentials are embedded in the extension.
+
+```bash
+corepack pnpm install --frozen-lockfile
+cp .env.example .env
+# Edit .env, then authenticate on the server computer:
+gcloud auth application-default login
+corepack pnpm ai:check
+corepack pnpm build
+corepack pnpm server
+```
+
+Load `workbrowser/dist` as an unpacked extension in Chrome. Connect to `http://localhost:8787` using the value in `.data/dev-token`. In a Dev Container, forward port 8787 privately to the computer running Chrome.
+
+In Settings → Sites & limits, add target origins to **both** the browsing list and the AI page access list. Origins match exactly, including protocol, subdomain and port. AI page access defaults to empty. Only approve company-authorized sites for the chosen AI provider.
+
+## What is implemented
+
+- A model-driven observe → act → result loop, based on Nanobrowser's single-agent design; fixed commands are not used in AI mode.
+- Current-page reading, extraction and summaries, plus URL navigation, linked pages, search inputs, pagination, scrolling and waits.
+- Native Gemini function calling over Vertex AI REST; optional Gemini Developer API when company policy permits.
+- Native function call IDs and opaque thought signatures preserved across turns. One browser call runs per model response; further calls get matching skipped results to avoid stale batches.
+- Working notes retained across long tasks; old observations can be elided after notes exist. Context and tool results are bounded and truncation is visible.
+- Recovery from safe pre-dispatch errors using the next model decision. Unknown delivery, unverified effects and detected protected operations stop execution rather than repeating an uncertain action.
+- Repeated/no-effect call detection, turn/time limits, stop, partial results and explicit final answers.
+- Server-side and extension-side site checks before model requests and browser operations. Previously captured sources are rechecked after policy changes. Browsing overrides never override AI page access approval.
+- Local history (20 runs), notes, answers, observed sources and downloadable extracted text (up to 200,000 characters per run).
+- English UI; multilingual instructions and answers without a language selector.
+- AI connection diagnosis in Settings and `pnpm ai:check`.
+
+Example instructions:
+
+```text
+Summarize this page and highlight the key risks.
+Extract the names, dates and amounts on this page into a table.
+Go to https://example.com, find its pricing pages and compare the plans. Include source URLs.
+このページから会社名と所在地を取り出して、表にまとめて。
+関連ページも確認して、サービスの違いを日本語で要約して。
+Résume cette page en français et cite les sources.
+```
+
+## Data and operational scope
+
+AI mode sends the instruction, approved page text/element labels, URLs (including query strings where relevant), tool results and working notes through the local server to the configured AI. Page text is untrusted data and is marked by the browser layer. Screenshots and arbitrary page scripts are not available to the model. The layer masks known secrets/password/payment/OTP fields; this is not a general personal-data classification system. Do not put secrets in prompts.
+
+One task operates in the selected tab. Avoid manually changing that tab during a run. If a link opens another tab, the agent can use its reported URL in the selected tab; it cannot choose arbitrary existing tabs. Login/CAPTCHA and detected consequential writes require manual intervention. Search/navigation are allowed; detection of writes is best effort. PDFs, Office files and images do not have a dedicated parser in this version.
+
+Stop prevents subsequent actions; already sent input cannot be undone. Worker restart marks a running task interrupted. There is no automatic replay or automatic resume. Starting a new task uses a fresh agent context and the current page.
+
+The server entrypoint accepts local connections only. **Workspace/IAP extension login and a shared Cloud Run service are not deployment-ready.** Running this version on a company computer with a local server is supported by the setup instructions; organization-wide deployment still requires the work in [cloud-migration.md](docs/cloud-migration.md).
+
+## Offline demo
+
+When no model is configured, AI mode reports that setup is required; it never silently switches to a mock. Select **Offline demo** in the panel to use the older deterministic simulator without external AI calls. Open the demo CRM from Settings and use:
+
+```text
+ページのテキストを取得
+「検索」に「顧客 001」を入力
+「検索する」をクリック
+100件を順番に処理
+```
+
+These are demo commands, not the language parser for AI mode. The 100-record update exercise is available only in this explicit demo mode.
+
+## Development and verification
+
+```bash
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm build
+```
+
+Unit/integration tests exercise the real agent loop, API validation and Gemini HTTP encoding with scripted model responses and simulated browser results. They do not prove real model reasoning or real browser behavior.
+
+On a computer that can run Chrome for Testing / Chromium:
+
+```bash
+CHROME_PATH=/path/to/chrome corepack pnpm test:agent-browser
+CHROME_PATH=/path/to/chrome corepack pnpm test:browser
+```
+
+The first loads the actual extension and checks URL navigation, linked-page reading, current-page summary and multilingual answer plumbing using a scripted model. The second covers the legacy offline demo. Both use a temporary profile/server and `--use-mock-keychain`. The current implementation has not been run against Chrome or a real AI in the supplied Dev Container; see [validation.md](docs/validation.md).
+
+## Structure and attribution
+
+```text
+src/agent/             Model/tool loop, prompt, working context and tool definitions
+src/extension/         Chrome wiring, stop, persistence and server access
+src/shared/            Validated API contracts and policy
+src/browser-control/   Nanobrowser-derived CDP/Puppeteer browser layer
+entrypoints/           Vue side panel, settings and extension background
+server/                Local authenticated API, Vertex/Gemini adapter, policy store and demo
+scripts/               AI connection test and real-extension smoke checks
+```
+
+The browser layer is derived from the supplied Nanobrowser clone under Apache-2.0. Its single-agent loop, tool catalogue wrapper, prompt and guard design were consulted for the Workbrowser agent implementation; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

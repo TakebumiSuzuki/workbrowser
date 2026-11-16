@@ -1,0 +1,111 @@
+import { launch } from 'puppeteer-core';
+import { serve } from '@hono/node-server';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import assert from 'node:assert/strict';
+import { createApp } from '../server/app';
+import { PolicyStore } from '../server/store';
+import { DEFAULT_POLICY, type Run } from '../src/shared/contracts';
+
+const executablePath = process.env.CHROME_PATH;
+if (!executablePath) throw new Error('CHROME_PATH に Chrome / Chromium の実行ファイルを指定してください。');
+const directory = await mkdtemp(join(tmpdir(), 'workbrowser-browser-'));
+const store = new PolicyStore(directory);
+const token = crypto.randomUUID() + crypto.randomUUID();
+const server = serve({ fetch: createApp({ mode: 'local', token, localEmail: 'developer@example.test', localAdmin: true }, store).fetch, hostname: '127.0.0.1', port: 0 });
+await new Promise<void>(resolve => { if (server.listening) resolve(); else server.once('listening', resolve); });
+const address = server.address();
+if (!address || typeof address === 'string') throw new Error('Missing server address');
+const origin = `http://127.0.0.1:${address.port}`;
+await store.save({ ...DEFAULT_POLICY, allowedOrigins: [origin] });
+const browser = await launch({ executablePath, headless: true, protocolTimeout: 30000, pipe: true, enableExtensions: [resolve('dist')], args: ['--no-sandbox', '--use-mock-keychain'] });
+try {
+  const workerTarget = await browser.waitForTarget(t => t.type() === 'service_worker' && t.url().startsWith('chrome-extension://'), { timeout: 15000 });
+  const extensionOrigin = 'chrome-extension://' + new URL(workerTarget.url()).host;
+  const worker = await workerTarget.worker();
+  worker?.on('console', message => console.info('worker:', message.text()));
+  const options = await browser.newPage();
+  await options.goto(extensionOrigin + '/options.html');
+  options.on('pageerror', error => console.error('options:', error instanceof Error ? error.message : String(error)));
+  const send = <T>(message: unknown): Promise<T> => options.evaluate(async value => {
+    const response = await chrome.runtime.sendMessage(value);
+    if (!response.ok) throw new Error(response.error);
+    return response.data;
+  }, message);
+  await send({ type: 'connect', serverUrl: origin, token });
+  await options.reload();
+  await options.waitForFunction(() => document.body.innerText.includes('developer@example.test'));
+  await mkdir('artifacts', { recursive: true });
+  await options.setViewport({ width: 1200, height: 900 });
+  await options.screenshot({ path: 'artifacts/settings.png', fullPage: true });
+  const demo = await browser.newPage();
+  await demo.goto(origin + '/demo');
+  const tabs = await options.evaluate(() => chrome.tabs.query({}));
+  const tab = tabs.find(t => t.url === origin + '/demo');
+  assert(tab?.id);
+  const panel = await browser.newPage();
+  await panel.setViewport({ width: 410, height: 900 });
+  await panel.goto(extensionOrigin + '/sidepanel.html');
+  await panel.waitForSelector('textarea');
+  await panel.screenshot({ path: 'artifacts/panel.png', fullPage: true });
+  const waitRun = async (timeout = 120000): Promise<Run> => {
+    const start = Date.now();
+    let reported = 0;
+    while (Date.now() - start < timeout) {
+      const state = await send<{ run: Run }>({ type: 'state' });
+      if (state.run && state.run.status !== 'running') return state.run;
+      if (state.run?.completed >= reported + 25) { reported = state.run.completed; console.info(`progress: ${reported}/${state.run.total}`); }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    throw new Error('Run timed out');
+  };
+  await send({ type: 'start', mode: 'mock', prompt: '「検索」に「顧客 001」を入力', tabId: tab.id });
+  let run = await waitRun();
+  assert.equal(run.status, 'completed', run.message);
+  assert.equal(await demo.$eval('#query', el => (el as HTMLInputElement).value), '顧客 001');
+  console.info('PASS: real extension set input through chrome.debugger');
+  await demo.evaluate(async () => {
+    const frame = document.createElement('iframe'); frame.id = 'excluded-frame';
+    frame.srcdoc = '<button>IFRAME_PRIVATE_MARKER_834</button>';
+    document.body.append(frame);
+    await new Promise<void>(resolve => { frame.onload = () => resolve(); });
+  });
+  await send({ type: 'start', mode: 'mock', prompt: 'ページのテキストを取得', tabId: tab.id });
+  run = await waitRun();
+  assert.equal(run.status, 'completed', run.message);
+  assert(!run.output?.includes('IFRAME_PRIVATE_MARKER_834'));
+  await demo.evaluate(() => document.querySelector('#excluded-frame')?.remove());
+  console.info('PASS: excluded iframe text is not read');
+  await demo.evaluate(() => (document.querySelector('#reset') as HTMLButtonElement).click());
+  console.info('starting batch');
+  await send({ type: 'start', mode: 'mock', prompt: `${process.env.SMOKE_COUNT ?? 100}件を順番に処理`, tabId: tab.id });
+  run = await waitRun(600000);
+  assert.equal(run.status, 'completed', run.message);
+  assert.equal(run.completed, Number(process.env.SMOKE_COUNT ?? 100) * 2 + 1);
+  assert((await demo.$eval('#status', el => el.textContent ?? '')).includes(`処理済み ${process.env.SMOKE_COUNT ?? 100} / 100`));
+  assert(run.output?.includes('処理済み'));
+  console.info(`PASS: sequential ${process.env.SMOKE_COUNT ?? 100}-record run, ${run.completed} steps`);
+  await panel.screenshot({ path: 'artifacts/completed.png', fullPage: true });
+  await demo.evaluate(() => (document.querySelector('#reset') as HTMLButtonElement).click());
+  await send({ type: 'start', mode: 'mock', prompt: `${process.env.SMOKE_COUNT ?? 100}件を順番に処理`, tabId: tab.id });
+  await send({ type: 'stop' });
+  run = await waitRun();
+  assert.equal(run.status, 'stopped', run.message);
+  const completedAtStop = await demo.$eval('#status', el => el.textContent);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(await demo.$eval('#status', el => el.textContent), completedAtStop);
+  console.info('PASS: stop prevents subsequent actions');
+  const policy = await store.read();
+  await send({ type: 'start', mode: 'mock', prompt: '100件を順番に処理', tabId: tab.id });
+  await send({ type: 'save-policy', policy: { ...policy, allowedOrigins: [] } });
+  run = await waitRun();
+  assert.equal(run.status, 'failed', run.message);
+  console.info('PASS: policy revocation stops a running task');
+  await assert.rejects(send({ type: 'start', mode: 'mock', prompt: 'テキストを取得', tabId: tab.id }), /許可/);
+  console.info('PASS: administrator empty allowlist blocks observation and execution');
+} finally {
+  await browser.close();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await rm(directory, { recursive: true, force: true });
+}
