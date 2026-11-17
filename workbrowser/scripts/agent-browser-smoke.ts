@@ -23,7 +23,7 @@ const model: ModelProvider = {
     const japanese = request.prompt.includes('要約');
     let call: AgentCall;
     const last = request.history.at(-1)?.results[0];
-    if (!request.initial && !last) call = { name: 'navigate', args: { url: origin + '/research' } };
+    if (!request.initial && !last && !request.currentUrl.startsWith(origin)) call = { name: 'navigate', args: { url: origin + '/research' } };
     else if (!last || last.name === 'navigate') call = { name: 'read', args: {} };
     else if (last.name === 'read' && request.currentUrl.endsWith('/research') && !japanese) call = { name: 'click', args: { target: { role: 'link', name: 'Team details' } } };
     else if (last.name === 'click') call = { name: 'read', args: {} };
@@ -85,7 +85,7 @@ try {
   assert.equal(run.status, 'completed', run.message);
   assert(run.output?.includes('売上'));
   assert.equal(page.url(), origin + '/research');
-  assert(!run.events.some(event => event.label === 'navigate'));
+  assert(!run.events.some(event => event.action?.tool === 'navigate'));
   console.info('PASS: current-page summary without navigation, Japanese answer');
 } finally {
   await browser?.close();

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_POLICY, PolicySchema, PlanSchema, unrestricted, urlAllowed } from '../src/shared/contracts';
+import { DEFAULT_POLICY, PolicySchema, PlanSchema, modelAllowed, unrestricted, urlAllowed, writePermission } from '../src/shared/contracts';
+import { classify } from '../src/browser-control/core/interaction/classify';
+import type { FormFacts } from '../src/browser-control/probe';
 import { isUrlAllowed, combinePolicies } from '../src/browser-control/core/url-policy';
 import { mockPlan } from '../server/planner';
 import { localConnection } from '../src/extension/api';
@@ -51,5 +53,31 @@ describe('mock planner', () => {
     for (const tool of ['screenshot', 'evaluate', 'devtools', 'upload', 'tabs']) {
       expect(PlanSchema.safeParse({ mode: 'mock', message: '', steps: [{ tool, args: {}, label: '' }] }).success).toBe(false);
     }
+  });
+});
+
+describe('action permission settings', () => {
+  it('loads existing policies with Ask as the default and no site rules', () => {
+    const { writeMode: _mode, writeRules: _rules, ...legacy } = DEFAULT_POLICY;
+    expect(PolicySchema.parse(legacy)).toMatchObject({ writeMode: 'ask', writeRules: [] });
+  });
+  it('uses exact-origin site rules before the global mode without granting browsing/AI access', () => {
+    const policy = { ...DEFAULT_POLICY, writeMode: 'auto' as const, writeRules: [
+      { origin: 'https://ask.test', rule: 'ask' as const }, { origin: 'https://block.test', rule: 'block' as const },
+    ] };
+    expect(writePermission(policy, 'https://ask.test/path')).toEqual({ rule: 'ask', canRemember: false });
+    expect(writePermission(policy, 'https://block.test')).toEqual({ rule: 'block', canRemember: false });
+    expect(writePermission(policy, 'https://ask.test:444')).toMatchObject({ rule: 'allow' });
+    expect(writePermission({ ...DEFAULT_POLICY, writeRules: [{ origin: 'https://allow.test', rule: 'allow' }] }, 'https://allow.test')).toMatchObject({ rule: 'allow' });
+    expect(modelAllowed(policy, 'u@example.test', 'https://ask.test')).toBe(false);
+    expect(writePermission(policy, 'file:///tmp/x').rule).toBe('block');
+  });
+  it('rejects duplicate site rules and invalid modes', () => {
+    expect(PolicySchema.safeParse({ ...DEFAULT_POLICY, writeMode: 'anything' }).success).toBe(false);
+    expect(PolicySchema.safeParse({ ...DEFAULT_POLICY, writeRules: [{ origin: 'https://a.test', rule: 'ask' }, { origin: 'https://a.test', rule: 'allow' }] }).success).toBe(false);
+  });
+  it.each(['Delete private note', 'Delete customer record', '私用メモを削除', '顧客レコードを削除'])('classifies %s as the same deletion category', name => {
+    const facts: FormFacts = { tag: 'button', type: 'button', classes: '', isLink: false, submitter: false, field: false, form: null, money: '', textEntry: false, searchField: false };
+    expect(classify({ mode: 'activate', name, role: 'button', facts }).category).toBe('delete');
   });
 });

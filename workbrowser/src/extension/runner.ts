@@ -1,15 +1,40 @@
-import { createChromeController, type Session, type Result } from '../browser-control';
-import { PlanSchema, PolicySchema, SAFE_TOOLS, modelAllowed, unrestricted, urlAllowed, type Identity, type Policy, type Run } from '../shared/contracts';
+import { createChromeController, LayerError, type ConfirmAnswer, type ConfirmRequest, type Session, type Result } from '../browser-control';
+import { PlanSchema, PolicySchema, SAFE_TOOLS, modelAllowed, originOf, unrestricted, urlAllowed, writePermission, type Identity, type Policy, type Run } from '../shared/contracts';
 import { runAgent } from '../agent/loop';
-import { type AgentInfo, AgentTurnSchema } from '../shared/agent';
+import { type AgentInfo, AgentTurnSchema, type ConversationTurn } from '../shared/agent';
+import { appendTrace, conversationTurns } from '../shared/conversation';
+import { activityEvent, appendEvent } from '../shared/activity';
+import { prepareImage } from './vision';
+import type { ScreenshotData } from '../browser-control';
 import { api } from './api';
 import { connection, finishRun, saveRun, state } from './storage';
+import { ApprovalBroker } from './approvals';
 
-let active: { abort: AbortController; run: Run } | null = null;
+type Authorize = (request: ConfirmRequest, answer: ConfirmAnswer) => Promise<void>;
+let active: { abort: AbortController; run: Run; authorize?: Authorize } | null = null;
 let starting = false;
-const controller = createChromeController();
+const approvals = new ApprovalBroker(async request => {
+  if (request) {
+    if (active?.run.id === request.runId) {
+      active.run.message = `Waiting for approval: ${request.action} ${request.target}`;
+      appendEvent(active.run, { at: new Date().toISOString(), label: active.run.message, status: 'info' });
+      await saveRun(active.run);
+    }
+    await chrome.storage.local.set({ pendingApproval: request });
+  } else await chrome.storage.local.remove('pendingApproval');
+});
+const controller = createChromeController({ prompt: {
+  confirm: (request, signal) => {
+    const task = active;
+    if (!task?.authorize) throw new LayerError('NEEDS_USER', 'There is no active task to approve.');
+    return approvals.request(task.run.id, request, signal, answer => task.authorize!(request, answer));
+  },
+  // ask_user is not exposed; manual takeover still returns a USER_STEP for the user to perform in Chrome.
+  ask: async () => ({ outcome: 'cancel' }),
+} });
 export const ready = (async () => {
   // A worker restart cannot establish whether an earlier write completed. Never replay it automatically.
+  await chrome.storage.local.remove('pendingApproval');
   const old = (await state()).run;
   if (old?.status === 'running') await finishRun({ ...old, status: 'interrupted', message: 'The extension restarted. Check the last operation on the page before starting a new task.' });
 })();
@@ -19,6 +44,10 @@ function layerPolicy(policy: Policy, email: string) {
 }
 export async function stop(): Promise<void> {
   active?.abort.abort();
+}
+export async function answerApproval(id: string, runId: string, answer: ConfirmAnswer): Promise<void> {
+  if (active?.run.id !== runId) throw new Error('This task is no longer active.');
+  await approvals.answer(id, runId, answer);
 }
 export async function begin(prompt: string, tabId: number, mode: 'agent' | 'mock' = 'agent'): Promise<void> {
   if (mode === 'mock') return beginMock(prompt, tabId);
@@ -32,14 +61,17 @@ export async function begin(prompt: string, tabId: number, mode: 'agent' | 'mock
     const info = await api<AgentInfo>(conn, '/api/agent/info');
     if (!info.configured) throw new Error('AI is not configured. Open Settings and follow the company setup guide. Demo mode is available for offline checks.');
     await chrome.tabs.get(tabId);
-    const run: Run = { id: crypto.randomUUID(), prompt, tabId, startedAt: new Date().toISOString(), status: 'running', completed: 0, total: 0, message: 'Starting agent…', events: [], mode: 'agent', sources: [] };
+    const previous = await state();
+    const conversationId = previous.run?.mode === 'mock' ? crypto.randomUUID() : previous.conversationId ?? crypto.randomUUID();
+    const conversation = conversationTurns(previous.history, conversationId);
+    const run: Run = { id: crypto.randomUUID(), conversationId, prompt, tabId, startedAt: new Date().toISOString(), status: 'running', completed: 0, total: 0, message: 'Starting agent…', events: [], mode: 'agent', sources: [] };
     const abort = new AbortController();
     active = { abort, run };
     await saveRun(run);
-    void executeAgent(run, abort, policy, me, conn);
+    void executeAgent(run, abort, policy, me, conn, conversation);
   } finally { starting = false; }
 }
-async function executeAgent(run: Run, abort: AbortController, initialPolicy: Policy, me: Identity, conn: import('../shared/contracts').Connection): Promise<void> {
+async function executeAgent(run: Run, abort: AbortController, initialPolicy: Policy, me: Identity, conn: import('../shared/contracts').Connection, conversation: ConversationTurn[]): Promise<void> {
   let session: Session | undefined;
   const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(initialPolicy.maxMinutes * 60000)]);
   // Chrome APIs extend the worker lifetime while a first model call is pending, before debugger attachment.
@@ -48,9 +80,16 @@ async function executeAgent(run: Run, abort: AbortController, initialPolicy: Pol
   const controlPolicy = () => ({ allow: policy.modelOrigins.filter(origin => urlAllowed(policy, me.email, origin)), deny: [] });
   try {
     session = (await controller).createSession({
-      urlPolicy: controlPolicy(), observeDefault: 'full', budget: 18000, confirm: 'sensitive',
-      // Scraping sessions stop on detected business writes; search/navigation are classified as read actions.
-      decideWrite: () => ({ decision: 'ask', canRemember: false }),
+      urlPolicy: controlPolicy(), capabilities: ['vision'], observeDefault: 'full', budget: 18000, confirm: 'sensitive',
+      decideWrite: async () => {
+        const check = await checkpoint(run.sources ?? []);
+        if (!check.canObserve) throw new LayerError('URL_NOT_ALLOWED', 'This site is no longer approved for browser actions.');
+        const permission = writePermission(policy, check.url);
+        if (permission.rule === 'block') throw new LayerError('WRITE_BLOCKED', 'The action rule for this site blocks submissions and deletions. Nothing was dispatched.');
+        return permission.rule === 'allow'
+          ? { decision: 'run', by: policy.writeRules.some(item => item.origin === originOf(check.url)) ? 'site-rule' : 'auto', canRemember: false }
+          : { decision: 'ask', canRemember: me.admin && permission.canRemember };
+      },
       handover: true, reveal: () => false,
     });
     // The host shares only the selected tab. Explicit navigate may leave a new-tab or unapproved page.
@@ -65,6 +104,20 @@ async function executeAgent(run: Run, abort: AbortController, initialPolicy: Pol
       const url = tab.url ?? '';
       return { url, maxSteps: policy.maxSteps, canObserve: modelAllowed(policy, me.email, url) };
     };
+    active!.authorize = async (request, answer) => {
+      const check = await checkpoint(run.sources ?? []);
+      if (request.tabId !== run.tabId || originOf(check.url) !== request.origin) throw new LayerError('TARGET_CHANGED', 'The tab changed sites while approval was pending. Nothing was dispatched.');
+      if (!check.canObserve) throw new LayerError('URL_NOT_ALLOWED', 'Access to this site was revoked while approval was pending.');
+      const permission = writePermission(policy, check.url);
+      if (permission.rule === 'block') throw new LayerError('WRITE_BLOCKED', 'The site action rule now blocks this operation. Nothing was dispatched.');
+      if (answer === 'approve-remember') {
+        if (!me.admin || !permission.canRemember) throw new LayerError('USER_DECLINED', 'The current settings require approval for each action.');
+        const next = PolicySchema.parse({ ...policy, writeRules: [...policy.writeRules.filter(item => item.origin !== request.origin), { origin: request.origin, rule: 'allow' }] });
+        policy = PolicySchema.parse(await api(conn, '/api/policy', { method: 'PUT', body: JSON.stringify(next), signal }));
+        signal.throwIfAborted();
+        await session!.setUrlPolicy(controlPolicy());
+      }
+    };
     const result = await runAgent(run.prompt, {
       signal, checkpoint,
       model: async request => AgentTurnSchema.parse(await api(conn, '/api/agent/turn', { method: 'POST', body: JSON.stringify(request), signal: AbortSignal.any([signal, AbortSignal.timeout(100000)]) })),
@@ -72,22 +125,29 @@ async function executeAgent(run: Run, abort: AbortController, initialPolicy: Pol
         signal.throwIfAborted();
         if (tool === 'navigate' && typeof args.url === 'string' && !modelAllowed(policy, me.email, args.url)) throw new Error('The destination is not approved for browsing and AI page access. Add its exact origin in Settings.');
         if (tool === 'wait' && typeof args.ms === 'number') args.ms = Math.min(args.ms, 15000);
-        return session!.call(tool, args, { signal });
+        const result = await session!.call(tool, args, { signal });
+        if (tool !== 'screenshot' || !result.ok) return result;
+        try { return { ...result, data: await prepareImage(result.data as ScreenshotData) }; }
+        catch (error) { return { ok: false, text: error instanceof Error ? error.message : 'Screenshot preparation failed.', error: { code: 'CAPTURE_FAILED', message: 'Screenshot preparation failed.', delivered: false, hint: 'Try a smaller viewport or finish with partial results.' } }; }
       },
-      progress: async (label, status, progress) => {
+      record: async (tool, args, result, sourceUrl) => {
+        const currentUrl = (await chrome.tabs.get(run.tabId).catch(() => undefined))?.url;
+        run.sources = [...new Set([...(run.sources ?? []), ...[sourceUrl, currentUrl].filter((url): url is string => !!url && !!originOf(url))])];
+        appendEvent(run, activityEvent(tool, args, result, currentUrl ?? sourceUrl));
+        run.trace = appendTrace(run.trace, tool, args, result); await saveRun(run);
+      },
+      progress: async (label, _status, progress) => {
         run.completed = progress.turns; run.notes = progress.notes; run.sources = progress.sources;
         run.message = label;
-        run.events.push({ at: new Date().toISOString(), label, status });
-        if (run.events.length > 500) run.events.shift();
         await saveRun(run);
       },
       capture: async (text, url) => {
         const next = (run.extracted ?? '') + `\n\nSource: ${url}\n${text}`;
         run.extracted = next.slice(0, 200000);
-        if (next.length > 200000) run.events.push({ at: new Date().toISOString(), label: 'Local text archive reached its 200,000 character limit.', status: 'info' });
+        if (next.length > 200000) appendEvent(run, { at: new Date().toISOString(), label: 'Local text archive reached its 200,000 character limit.', status: 'info' });
         await saveRun(run);
       },
-    });
+    }, conversation);
     run.output = result.answer; run.notes = result.notes; run.sources = result.sources; run.outcome = result.outcome;
     run.status = result.outcome === 'failed' ? 'failed' : 'completed';
     run.message = result.outcome === 'success' ? 'Task completed.' : result.outcome === 'partial' ? 'Partial results. See the answer for remaining work.' : 'The task could not be completed.';
@@ -96,7 +156,7 @@ async function executeAgent(run: Run, abort: AbortController, initialPolicy: Pol
     run.message = abort.signal.aborted ? 'Stopped. Actions already sent are not undone.' : signal.aborted ? 'Execution time limit reached.' : error instanceof Error ? error.message : 'Agent execution failed.';
     run.output = [run.message, run.notes].filter(Boolean).join('\n\n');
     run.outcome = 'partial';
-    run.events.push({ at: new Date().toISOString(), label: run.message, status: 'error' });
+    appendEvent(run, { at: new Date().toISOString(), label: run.message, status: 'error' });
   } finally {
     clearInterval(heartbeat);
     if (session) await (await controller).closeSession(session).catch(() => undefined);
@@ -118,7 +178,7 @@ async function beginMock(prompt: string, tabId: number): Promise<void> {
     const url = new URL(tab.url);
     const plan = PlanSchema.parse(await api(conn, '/api/agent/plan', { method: 'POST', body: JSON.stringify({ prompt, url: url.origin + url.pathname }) }));
     if (plan.steps.length > policy.maxSteps) throw new Error('操作数の上限を超えています。');
-    const run: Run = { id: crypto.randomUUID(), prompt, tabId, startedAt: new Date().toISOString(), status: 'running', completed: 0, total: plan.steps.length, message: plan.message, events: [], mode: 'mock' };
+    const run: Run = { id: crypto.randomUUID(), conversationId: crypto.randomUUID(), prompt, tabId, startedAt: new Date().toISOString(), status: 'running', completed: 0, total: plan.steps.length, message: plan.message, events: [], mode: 'mock' };
     const abort = new AbortController();
     active = { abort, run };
     await saveRun(run);
@@ -129,8 +189,7 @@ async function execute(run: Run, abort: AbortController, steps: import('../share
   let session: Session | undefined;
   const deadline = Date.now() + initialPolicy.maxMinutes * 60000;
   const event = (label: string, status: 'ok' | 'error' | 'info') => {
-    run.events.push({ at: new Date().toISOString(), label, status });
-    if (run.events.length > 500) run.events.shift();
+    appendEvent(run, { at: new Date().toISOString(), label, status });
   };
   try {
     if (!steps.length) { run.status = 'completed'; return; }
@@ -142,6 +201,7 @@ async function execute(run: Run, abort: AbortController, steps: import('../share
     await session.share(run.tabId);
     // Observe locally to establish node identity; page text is not sent to the mock server.
     const observed = await session.call('snapshot', { mode: 'interactive' }, { signal: abort.signal });
+    appendEvent(run, activityEvent('snapshot', { mode: 'interactive' }, observed, (await chrome.tabs.get(run.tabId)).url));
     checkResult(observed);
     for (const step of steps) {
       abort.signal.throwIfAborted();
@@ -159,6 +219,8 @@ async function execute(run: Run, abort: AbortController, steps: import('../share
       await saveRun(run);
       abort.signal.throwIfAborted();
       const result = await session.call(step.tool, step.args, { signal: abort.signal });
+      appendEvent(run, activityEvent(step.tool, step.args, result, (await chrome.tabs.get(run.tabId)).url));
+      await saveRun(run);
       checkResult(result);
       if (step.tool === 'read') {
         const data = result.data as { content?: string; remaining?: number } | undefined;
@@ -166,7 +228,6 @@ async function execute(run: Run, abort: AbortController, steps: import('../share
         if (data?.remaining) event('取得上限に達したため、ページの一部を保存しました。', 'info');
       }
       run.completed++;
-      event(step.label, 'ok');
       await saveRun(run);
     }
     run.status = 'completed';

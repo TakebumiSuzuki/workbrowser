@@ -21,6 +21,7 @@ export const ERROR_CODES = [
   'STATE_UNCHANGED',
   'MODAL_PENDING',
   'USER_DECLINED',
+  'WRITE_BLOCKED',
   'USER_STEP',
   'CONFIRMATION_TIMEOUT',
   'NEEDS_USER',
@@ -63,6 +64,7 @@ export const DEFAULT_HINTS: Record<ErrorCode, string> = {
   STATE_UNCHANGED: 'The control did not take the requested state.',
   MODAL_PENDING: 'A dialog or prompt is open on this tab. Resolve it first (handle_dialog, or wait for the user).',
   USER_DECLINED: 'The user declined. Do not repeat this action without new instructions from the user.',
+  WRITE_BLOCKED: 'The site action rule blocks this operation. Do not try another means to perform it.',
   USER_STEP:
     'This step is the user’s: a payment, an access grant, a secret or a page’s prompt dialog. Nothing was dispatched for it. Prepare everything around it, let the user do it, and do not try to do it another way.',
   CONFIRMATION_TIMEOUT:

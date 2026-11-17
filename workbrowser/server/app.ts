@@ -41,7 +41,7 @@ export function createApp(config: AuthConfig, store: PolicyStore, model: ModelPr
     const policy = await store.read();
     if (request.history.length >= policy.maxSteps) return c.json({ error: 'STEP_LIMIT', message: 'Agent turn limit reached.' }, 400);
     // Re-evaluate every page represented in context, including previously captured content after revocation.
-    const urls = [...request.sources, ...(request.initial ? [request.initial.url] : []), ...request.history.flatMap(e => e.results.flatMap(r => r.url ? [r.url] : []))];
+    const urls = [...request.sources, ...(request.initial ? [request.initial.url] : []), ...request.history.flatMap(e => e.results.flatMap(r => r.url ? [r.url] : [])), ...(request.conversation ?? []).flatMap(turn => turn.sources)];
     if (urls.some(url => !modelAllowed(policy, c.get('identity').email, url))) return c.json({ error: 'MODEL_DATA_DENIED', message: 'A source site is not approved for AI page access. Check administrator settings.' }, 403);
     return c.json(await model.turn(request, AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(90000)])));
   });

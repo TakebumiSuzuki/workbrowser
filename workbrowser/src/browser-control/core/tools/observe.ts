@@ -244,6 +244,11 @@ export async function screenshot(ctx: ToolContext, args: ScreenshotArgs): Promis
     origin = { x: clip.x, y: clip.y };
   } else if (args.fullPage) {
     origin = { x: 0, y: 0 };
+  } else {
+    // Workbrowser: an explicit viewport clip keeps masks/labels aligned even when Chrome's surface is smaller
+    // than its emulated viewport. A raw surface screenshot can otherwise be cropped without scaling its CSS pixels.
+    const viewport = await tab.probe!.callGlobal<{ width: number; height: number }>(frames[0], 'viewport');
+    clip = { x: scroll.x, y: scroll.y, width: viewport.width, height: viewport.height };
   }
   // The outline says which field values are masked; the image hides the same ones.
   const observation = await recentObservation(ctx);

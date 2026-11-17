@@ -20,3 +20,17 @@ definitions, page-content boundaries, working context and progress guards.
 Workbrowser uses its own Vue UI, local authenticated API and server-side Gemini
 REST adapter. Explicit navigation may leave an unapproved or new-tab page;
 destination policy still applies, and all reads check the current page.
+
+The continuing conversation and visual fallback connect the existing Nanobrowser
+`core/tools/labels.ts` and `core/tools/observe.ts` implementation at the revision
+above: masked screenshots, red element bounding boxes and ref labels, followed by
+ref-based actions. Its agent `loop.ts` screenshot result/image handling and
+`tools.ts` vision tool exposure were also consulted. Workbrowser adds automatic
+fallback after safe DOM target-resolution failures and its own Gemini image transport.
+Its screenshot path also captures an explicit viewport clip to keep masks and
+labels aligned when Chrome's rendering surface and emulated viewport differ.
+
+Action permissions connect the layer's existing confirmation gate to Workbrowser's
+approval broker and UI, with Ask/Auto defaults and exact-origin site rules stored
+in Workbrowser's server policy. The classifier includes additional Japanese
+submission/deletion labels without distinguishing business and personal data.

@@ -1,13 +1,14 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import { z } from 'zod';
-import { begin, ready, stop } from '../src/extension/runner';
+import { answerApproval, begin, ready, stop } from '../src/extension/runner';
 import { api, localConnection } from '../src/extension/api';
-import { connection, state } from '../src/extension/storage';
+import { connection, openConversation, state } from '../src/extension/storage';
 import { PolicySchema } from '../src/shared/contracts';
 
 const MessageSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }),
   z.strictObject({ type: z.literal('stop') }),
+  z.strictObject({ type: z.literal('answer-approval'), id: z.string().uuid(), runId: z.string().uuid(), answer: z.enum(['approve', 'approve-remember', 'decline']) }),
   z.strictObject({ type: z.literal('connect'), serverUrl: z.string(), token: z.string().max(1000) }),
   z.strictObject({ type: z.literal('identity') }),
   z.strictObject({ type: z.literal('agent-info') }),
@@ -16,6 +17,7 @@ const MessageSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('save-policy'), policy: PolicySchema }),
   z.strictObject({ type: z.literal('start'), prompt: z.string().trim().min(1).max(8000), tabId: z.number().int().positive(), mode: z.enum(['agent', 'mock']).default('agent') }),
   z.strictObject({ type: z.literal('clear-history') }),
+  z.strictObject({ type: z.literal('open-conversation'), id: z.string().min(1).max(100).optional() }),
 ]);
 export default defineBackground(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -28,6 +30,7 @@ export default defineBackground(() => {
       switch (message.type) {
         case 'state': return state();
         case 'stop': await stop(); return null;
+        case 'answer-approval': await answerApproval(message.id, message.runId, message.answer); return null;
         case 'identity': return api(await connection(), '/api/me');
         case 'agent-info': return api(await connection(), '/api/agent/info');
         case 'test-model': {
@@ -45,9 +48,10 @@ export default defineBackground(() => {
           return identity;
         }
         case 'start': await begin(message.prompt, message.tabId, message.mode); return null;
+        case 'open-conversation': await openConversation(message.id); return null;
         case 'clear-history':
           if ((await state()).run?.status === 'running') throw new Error('Stop the task before deleting its history.');
-          await chrome.storage.local.remove(['run', 'history']); return null;
+          await chrome.storage.local.remove(['run', 'history', 'conversationId']); return null;
       }
     })().then(data => reply({ ok: true, data }), error => reply({ ok: false, error: error instanceof Error ? error.message : '処理に失敗しました。' }));
     return true;

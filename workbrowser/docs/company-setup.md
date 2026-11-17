@@ -70,7 +70,7 @@ corepack pnpm server
 
 ## 4. 対象サイトを承認
 
-Settings → Sites & limitsで、例えば次の値を **Allowed browsing sitesとSites approved for AI page accessの両方** に入力して保存します:
+Settings → Sites & permissionsで、例えば次の値を **Allowed browsing sitesとSites approved for AI page accessの両方** に入力して保存します:
 
 ```text
 https://example.com
@@ -81,7 +81,7 @@ https://docs.example.com
 
 ## 5. 使う
 
-対象サイトへ通常のChromeでログインしておきます。拡張アイコンでサイドパネルを開き、AI agentを選んで実行します。
+対象サイトへ通常のChromeでログインしておきます。Settings → Connection & AI → Execution modeがAI agent（初期値）であることを確認し、拡張アイコンでサイドパネルを開いて実行します。
 
 ```text
 Summarize this page and list the key decisions.
@@ -93,7 +93,9 @@ Go to https://example.com, find the pricing pages, and compare the plans with so
 
 指示と回答はUIの言語に縛られません。モデルが対応する言語を使えます。現在ページの要約ならURLの指定は不要です。URLを指定する場合、新規タブや許可外のページから開始しても、そのページを読まずに承認済みの移動先を開けます。
 
-処理中は対象タブを手で操作しないでください。Stopは次の操作を止めます。ログイン・CAPTCHA・検知された業務書き込みなどで止まった場合は必要な手動操作を行い、新しいタスクとして開始します。拡張再起動後の自動再開はありません。
+保存・送信・削除の確認方法はSettings → Sites & permissions → Action permissionsで設定します。初期値Askでは操作前に承認カードが出ます。Approve onceは今回だけの承認、Declineは拒否です。Autoまたはサイト別Allowでは依頼した操作を追加確認なしで進めます。サイト別Ask/Blockが優先します。管理者はカードのAlways allow on this siteでAllowを保存できますが、サイト別Askでは表示しません。
+
+処理中は対象タブを手で操作しないでください。Stopは次の操作を止め、承認待ちも取り消します。ログイン・CAPTCHAなど手動対応が必要な場合はブラウザで対応後、会話を続けてください。拡張再起動後の自動再開はありません。
 
 ## 6. 会社PCでの動作確認
 

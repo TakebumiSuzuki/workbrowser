@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runAgent, trimContext, type AgentPorts } from '../src/agent/loop';
 import { agentTools, validateCall } from '../src/agent/tools';
-import type { AgentCall, AgentRequest, AgentTurn } from '../src/shared/agent';
+import type { AgentCall, AgentImage, AgentRequest, AgentTurn, ConversationTurn } from '../src/shared/agent';
 import type { Result } from '../src/browser-control';
 
 function turn(name: AgentCall['name'], args: Record<string, unknown> = {}): AgentTurn {
@@ -126,11 +126,12 @@ describe('autonomous observe/action/result loop', () => {
 });
 
 describe('tool and context boundaries', () => {
-  it('removes tab selection, screenshots, scripts, coordinate and selector targets from model tools', () => {
+  it('offers labelled viewport screenshots while keeping tab selection, scripts, coordinates and selectors unavailable', () => {
     const definitions = agentTools();
     const names = definitions.map(t => t.name);
     expect(names).toContain('done'); expect(names).toContain('remember');
-    for (const name of ['screenshot', 'evaluate', 'tabs', 'upload', 'devtools']) expect(names).not.toContain(name);
+    expect(names).toContain('screenshot');
+    for (const name of ['evaluate', 'tabs', 'upload', 'devtools']) expect(names).not.toContain(name);
     for (const definition of definitions) {
       const schema = JSON.stringify(definition.parametersJsonSchema);
       expect(schema).not.toContain('"tabId"');
@@ -140,6 +141,9 @@ describe('tool and context boundaries', () => {
     expect(() => validateCall({ name: 'click', args: { target: { ref: 'e1' }, tabId: 99 } })).toThrow();
     expect(() => validateCall({ name: 'click', args: { target: { selector: '#secret' } } })).toThrow();
     expect(() => validateCall({ name: 'press', args: { keys: 'Enter' } })).toThrow();
+    expect(validateCall({ name: 'screenshot', args: {} })).toMatchObject({ labels: true, fullPage: false });
+    expect(() => validateCall({ name: 'screenshot', args: { labels: false } })).toThrow();
+    expect(() => validateCall({ name: 'screenshot', args: { fullPage: true } })).toThrow();
   });
   it('preserves the prompt, working notes, recent evidence and opaque signatures during elision', () => {
     const context: AgentRequest = { prompt: 'Keep this full instruction.', currentUrl: 'https://example.test/', sources: [], notes: 'Revenue 42, source https://example.test/', finishOnly: false,
@@ -151,5 +155,66 @@ describe('tool and context boundaries', () => {
     expect(context.history[0].results[0].text).toContain('elided');
     expect(context.history.at(-1)?.results[0].text).toHaveLength(16000);
     expect(context.history[0].model.parts[0].thoughtSignature).toBe('opaque-signature');
+  });
+});
+
+describe('continuing conversations and visual fallback', () => {
+  const previous: ConversationTurn = { prompt: 'Compare plans.', answer: 'Plan A costs 42.', notes: 'Check the monthly units next time.', activity: 'click {"target":{"ref":"e1"}}\nERROR: NO_MATCH', sources: ['https://example.test/plans'], status: 'completed' };
+  const image: AgentImage = { mimeType: 'image/png', base64: 'aW1hZ2U=', width: 800, height: 600 };
+  it('answers a follow-up from prior instructions, answers, corrections and activity even when the current page is unavailable', async () => {
+    const h = harness([answer('The earlier click used the wrong target. Check monthly units.')], { canObserve: false, url: 'chrome://newtab/' });
+    const result = await runAgent('Where did the previous task go wrong?', h.ports, [previous]);
+    expect(result.outcome).toBe('success');
+    expect(h.contexts[0].conversation).toEqual([previous]);
+    expect(h.ports.checkpoint).toHaveBeenCalledWith(previous.sources);
+    expect(h.call).not.toHaveBeenCalled();
+  });
+  it('checks historical source permissions before sending a follow-up', async () => {
+    const h = harness([answer('Answer')]);
+    h.ports.checkpoint = async sources => { expect(sources).toContain(previous.sources[0]); throw new Error('Historical source revoked'); };
+    await expect(runAgent('Continue.', h.ports, [previous])).rejects.toThrow('revoked');
+    expect(h.ports.model).not.toHaveBeenCalled();
+  });
+  it('automatically sends a labelled image after a safe DOM target failure and then executes the selected ref', async () => {
+    const h = harness([turn('click', { target: { role: 'button', name: 'Search' } }), turn('click', { target: { ref: 'e7' } }), answer('Opened search.')]);
+    let clicks = 0;
+    h.call.mockImplementation(async tool => {
+      if (tool === 'screenshot') return { ok: true, text: 'screenshot with ref e7', data: image };
+      if (tool === 'click' && ++clicks === 1) return { ok: false, text: 'NO_MATCH', error: { code: 'NO_MATCH', message: 'No button name', delivered: false, hint: 'Observe' } };
+      return { ok: true, text: 'Observed current page.' };
+    });
+    await runAgent('Click the search icon.', h.ports);
+    expect(h.call.mock.calls.map(call => call[0])).toEqual(['snapshot', 'click', 'screenshot', 'click']);
+    expect(h.call.mock.calls[2][1]).toMatchObject({ labels: true, fullPage: false });
+    expect(h.contexts[1].history[0].results[0]).toMatchObject({ image, url: 'https://example.test/', ok: false });
+    expect(h.contexts[2].history[0].results[0].image).toBeUndefined();
+  });
+  it('lets the model request an image after DOM observation and retains only the latest image', async () => {
+    const h = harness([turn('screenshot'), turn('screenshot'), answer('The right icon is e7.')]);
+    h.call.mockImplementation(async tool => ({ ok: true, text: tool, ...(tool === 'screenshot' ? { data: image } : {}) }));
+    await runAgent('Identify this icon.', h.ports);
+    expect(h.contexts[1].history[0].results[0].image).toEqual(image);
+    expect(h.contexts[2].history[0].results[0].image).toBeUndefined();
+    expect(h.contexts[2].history[1].results[0].image).toEqual(image);
+  });
+  it('does not use image fallback to bypass a protected operation or repeat uncertain input', async () => {
+    for (const code of ['NEEDS_USER', 'USER_STEP', 'WRITE_BLOCKED', 'CONFIRMATION_TIMEOUT', 'TIMEOUT'] as const) {
+      const h = harness([turn('click', { target: { ref: 'e1' } }), answer('Manual step required.')]);
+      h.call.mockImplementation(async tool => tool === 'snapshot' ? { ok: true, text: 'initial' } : { ok: false, text: code, error: { code, message: code, delivered: code === 'TIMEOUT' ? 'unknown' : false, hint: 'manual' } });
+      if (code === 'TIMEOUT') await expect(runAgent('Open it.', h.ports)).rejects.toThrow('avoid repeating');
+      else expect((await runAgent('Open it.', h.ports)).outcome).toBe('partial');
+      expect(h.call.mock.calls.map(call => call[0])).not.toContain('screenshot');
+    }
+  });
+  it('answers general questions without requiring a browser observation', async () => {
+    const h = harness([answer('A DOM is the document structure.')], { canObserve: false, url: 'chrome://newtab/' });
+    expect((await runAgent('DOMとは何？', h.ports)).outcome).toBe('success');
+    expect(h.call).not.toHaveBeenCalled();
+  });
+  it('does not observe the page again merely to explain earlier work', async () => {
+    const h = harness([answer('The earlier target did not match.')]);
+    await runAgent('Explain the previous mistake.', h.ports, [previous]);
+    expect(h.call).not.toHaveBeenCalled();
+    expect(h.contexts[0].initial).toBeUndefined();
   });
 });

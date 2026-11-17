@@ -12,6 +12,19 @@ const request: AgentRequest = {
 const success = { candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ functionCall: { name: 'done', args: { outcome: 'success', answer: '売上は42です。' } }, thoughtSignature: 'next-state' }] } }] };
 
 describe('Gemini model wire protocol', () => {
+  it('includes the system instruction once on every stateless request without adding copies to conversation history', async () => {
+    const fetcher = vi.fn(async () => Response.json(success));
+    const model = createModel({ AI_PROVIDER: 'gemini', AI_MODEL: 'test', GEMINI_API_KEY: 'key' }, fetcher);
+    await model.turn(request, new AbortController().signal);
+    await model.turn({ ...request, prompt: '前回の説明を詳しく。', conversation: [{ prompt: request.prompt, answer: '売上42。', notes: '', activity: 'read: Sales 42', sources: request.sources, status: 'completed' }] }, new AbortController().signal);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    for (const call of fetcher.mock.calls) {
+      const body = JSON.parse((call as unknown as [string, RequestInit])[1].body as string);
+      expect(body.systemInstruction.parts).toEqual([{ text: SYSTEM_PROMPT }]);
+      expect(JSON.stringify(body.contents)).not.toContain(SYSTEM_PROMPT);
+      expect(JSON.stringify(body).split(SYSTEM_PROMPT.slice(0, 80))).toHaveLength(2);
+    }
+  });
   it('sends the complete tool/result history with function IDs and thought signatures', async () => {
     const fetcher = vi.fn(async () => Response.json(success));
     const model = createModel({ AI_PROVIDER: 'gemini', AI_MODEL: 'test-model', GEMINI_API_KEY: 'server-only-key' }, fetcher);
@@ -33,6 +46,23 @@ describe('Gemini model wire protocol', () => {
     await createModel({ AI_PROVIDER: 'gemini', AI_MODEL: 'test-model', GEMINI_API_KEY: 'key' }, fetcher).turn({ ...request, finishOnly: true }, new AbortController().signal);
     const init = (fetcher.mock.calls[0] as unknown as [string, RequestInit])[1];
     expect(JSON.parse(init.body as string).tools[0].functionDeclarations.map((t: { name: string }) => t.name)).toEqual(['done']);
+  });
+  it('sends earlier user/assistant turns and operation evidence before the new request, with real inline image parts', async () => {
+    const fetcher = vi.fn(async () => Response.json(success));
+    const image = { mimeType: 'image/jpeg' as const, base64: 'aW1hZ2U=', width: 800, height: 600 };
+    const context: AgentRequest = { ...request,
+      conversation: [{ prompt: 'Find the plan price.', answer: '42 per month.', notes: 'Check units.', activity: 'click e7: OK', sources: request.sources, status: 'completed' }],
+      history: [{ ...request.history[0], results: [{ ...request.history[0].results[0], image }] }],
+    };
+    await createModel({ AI_PROVIDER: 'gemini', AI_MODEL: 'test', GEMINI_API_KEY: 'key' }, fetcher).turn(context, new AbortController().signal);
+    const body = JSON.parse((fetcher.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(body.contents[0].parts[0].text).toBe('Find the plan price.');
+    expect(body.contents[0].parts[1].text).toContain('click e7: OK');
+    expect(body.contents[1]).toEqual({ role: 'model', parts: [{ text: '42 per month.' }] });
+    expect(body.contents[2].parts[0].text).toBe(request.prompt);
+    expect(body.contents[4].parts[0].functionResponse.name).toBe('read');
+    expect(body.contents[4].parts.at(-1).inlineData).toEqual({ mimeType: 'image/jpeg', data: image.base64 });
+    expect(body.contents[4].parts[0].functionResponse.response).not.toHaveProperty('image');
   });
   it('never claims to run a model when credentials are missing', async () => {
     const fetcher = vi.fn();

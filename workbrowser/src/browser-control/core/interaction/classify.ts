@@ -1,4 +1,5 @@
 // The sensitivity classifier: deterministic, from the accessible name and structural facts.
+// Workbrowser: also classify common Japanese submission/deletion labels, without business/personal distinctions.
 // It answers what the action will do; for forms, whether it will submit one. It follows the ideas of huashu-chrome's
 // payment gate (vocabulary, and a money amount next to a generic confirmation label), written independently, and is
 // deliberately kept at that scope for the first version: vocabulary, money next to a generic label, form ownership
@@ -57,7 +58,7 @@ export const DELETE_WORDS = vocabulary(
     'cancel order',
     'close account',
   ],
-  ['删除', '移除', '清空', '注销', '取消订阅'],
+  ['删除', '移除', '清空', '注销', '取消订阅', '削除', '消去', '破棄', '無効化', '退会', '解約'],
 );
 export const SUBMIT_WORDS = vocabulary(
   [
@@ -75,7 +76,7 @@ export const SUBMIT_WORDS = vocabulary(
     'approve',
     'reject',
   ],
-  ['提交', '发送', '发布', '确认', '保存', '更新', '创建', '批准', '拒绝', '驳回'],
+  ['提交', '发送', '发布', '确认', '保存', '更新', '创建', '批准', '拒绝', '驳回', '送信', '投稿', '公開', '確定', '適用', '登録', '作成', '承認', '却下'],
 );
 /** A cookie banner's refusal ("Reject all", "Reject cookies"), which is not a write although "reject" is. */
 export const COOKIE_REJECT = /cookie|^reject\s+all$|^(?:拒绝所有|全部拒绝|拒绝全部)$/i;

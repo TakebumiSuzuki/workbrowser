@@ -41,6 +41,14 @@ describe('API access and policy persistence', () => {
     expect((await new PolicyStore(directory).read()).allowedOrigins).toEqual([]);
     expect((await app.request('/api/policy', { method: 'PUT', headers, body: JSON.stringify(DEFAULT_POLICY) })).status).toBe(409);
   });
+  it('persists action modes and exact-origin site rules behind administrator authorization', async () => {
+    const app = setup();
+    const policy = { ...DEFAULT_POLICY, writeMode: 'auto', writeRules: [{ origin: 'https://example.test', rule: 'ask' }] };
+    expect((await app.request('/api/policy', { method: 'PUT', headers, body: JSON.stringify(policy) })).status).toBe(200);
+    const saved = await (await app.request('/api/policy', { headers })).json();
+    expect(saved).toMatchObject({ writeMode: 'auto', writeRules: policy.writeRules });
+    expect((await setup(false).request('/api/policy', { method: 'PUT', headers, body: JSON.stringify(saved) })).status).toBe(403);
+  });
   it('serializes concurrent saves without losing changes', async () => {
     const store = new PolicyStore(directory);
     const result = await Promise.allSettled([store.save(DEFAULT_POLICY), store.save(DEFAULT_POLICY)]);
@@ -103,6 +111,19 @@ describe('agent API and model data boundary', () => {
     await store.save({ ...DEFAULT_POLICY, overrides: [{ user: config.localEmail, expiresAt: new Date(Date.now() + 60000).toISOString() }] });
     expect((await app.request('/api/agent/turn', { method: 'POST', headers, body: JSON.stringify(request) })).status).toBe(403);
     expect(received).toHaveLength(0);
+  });
+  it('accepts scoped image input and rechecks historical conversation and image sources', async () => {
+    const { app, received, store } = agentSetup();
+    const saved = await store.save({ ...DEFAULT_POLICY, modelOrigins: ['http://localhost:8787'] });
+    const image = { mimeType: 'image/png', base64: 'aW1hZ2U=', width: 800, height: 600 };
+    const visual = { ...request, initial: { ...request.initial!, image } };
+    expect((await app.request('/api/agent/turn', { method: 'POST', headers, body: JSON.stringify(visual) })).status).toBe(200);
+    expect(received[0].initial?.image?.base64).toBe(image.base64);
+    const priorOnly = { ...request, sources: [], initial: undefined, conversation: [{ prompt: 'Earlier question', answer: 'Earlier answer', notes: '', activity: '', sources: request.sources, status: 'completed' }] };
+    await store.save({ ...saved, modelOrigins: [] });
+    expect((await app.request('/api/agent/turn', { method: 'POST', headers, body: JSON.stringify(priorOnly) })).status).toBe(403);
+    expect((await app.request('/api/agent/turn', { method: 'POST', headers, body: JSON.stringify(visual) })).status).toBe(403);
+    expect(received).toHaveLength(1);
   });
   it('rejects images, extra fields and excessive histories before calling a model', async () => {
     const { app, received } = agentSetup();
