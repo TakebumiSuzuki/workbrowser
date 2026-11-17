@@ -25,11 +25,6 @@ const conversationRuns = computed(() => {
   return runs;
 });
 const running = computed(() => state.value?.run?.status === 'running');
-const examples = computed(() => mode.value === 'mock'
-  ? ['ページのテキストを取得', '「検索」に「顧客 001」を入力', '「検索する」をクリック']
-  : ['Summarize this page and highlight the key points.',
-    'Extract names, dates and amounts from this page as a table.',
-    'Follow the relevant links on this site and compare the available plans. Include source URLs.']);
 function statusLabel(value: Run) {
   if (value.outcome === 'partial') return 'Partial results';
   return ({ running: 'Running', completed: 'Completed', stopped: 'Stopped', failed: 'Needs attention', interrupted: 'Interrupted' })[value.status];
@@ -107,8 +102,7 @@ function exportText(text: string | undefined, filename: string) {
 </script>
 <template>
   <div class="flex h-dvh min-w-[320px] flex-col">
-    <header class="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2">
-      <div class="flex min-w-0 items-center gap-2"><span aria-hidden="true" class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-emerald-800 text-sm font-bold text-white">w.</span><h1 class="truncate text-sm font-semibold">Workbrowser</h1></div>
+    <header class="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-3 py-2">
       <div class="flex shrink-0 items-center gap-1">
         <button class="rounded-lg p-2" aria-label="New conversation" title="New conversation" :disabled="running || pending" @click="openConversation()">＋</button>
         <nav aria-label="Conversation views" class="flex gap-1 text-xs"><button v-for="item in [{id:'chat',label:'Chat'},{id:'history',label:'History'}]" :key="item.id" class="rounded-lg px-2 py-2" :class="view === item.id ? 'bg-emerald-50 font-semibold text-emerald-900' : 'text-slate-500'" :aria-current="view === item.id ? 'page' : undefined" @click="view = item.id as 'chat' | 'history'">{{ item.label }}</button></nav>
@@ -121,10 +115,6 @@ function exportText(text: string | undefined, filename: string) {
         <p class="mb-4 text-xs text-slate-400">The latest 20 tasks are saved locally. Open one to continue its conversation.</p>
         <p v-if="!state?.history.length" class="text-sm text-slate-400">No runs yet.</p>
         <button v-for="item in state?.history" :key="item.id" class="mb-2 block w-full rounded-xl border bg-white p-4 text-left" :disabled="running || pending" @click="openConversation(conversationIdOf(item))"><span class="mb-2 block truncate text-sm">{{ item.prompt }}</span><span class="text-xs text-slate-400">{{ statusLabel(item) }} · {{ item.completed }} steps</span></button>
-      </template>
-      <template v-if="view === 'chat' && !conversationRuns.length">
-        <div class="pt-3"><h2 class="text-2xl font-semibold leading-relaxed">What would you like to find?</h2><p class="mt-3 text-xs leading-6 text-slate-500">Ask in English, Japanese, or another language. Work with this page, or include a URL to visit. The agent reads pages, chooses actions, and returns an answer with sources.</p></div>
-        <div class="mt-5 space-y-2"><button v-for="example in examples" :key="example" class="block w-full rounded-xl border bg-white px-4 py-3 text-left text-xs leading-6 hover:border-emerald-500" @click="prompt = example">{{ example }}</button></div>
       </template>
       <template v-if="view === 'chat'">
       <section v-for="run in conversationRuns" :key="run.id" class="space-y-4">
@@ -152,7 +142,6 @@ function exportText(text: string | undefined, filename: string) {
       </template>
     </main>
     <footer v-if="view === 'chat'" class="shrink-0 border-t bg-white p-3">
-      <p class="mb-1 truncate text-[11px] text-slate-400" :title="tab?.title">{{ tab?.title ?? 'Open a browser tab to begin.' }}</p>
       <section v-if="approval" aria-labelledby="approval-title" role="region" class="max-h-[55dvh] space-y-3 overflow-y-auto rounded-xl border border-amber-200 bg-amber-50 p-3">
         <div class="flex items-center justify-between gap-2"><h2 id="approval-title" class="text-sm font-semibold">Approval needed</h2><button class="text-xs text-slate-500" @click="stop">Stop task</button></div>
         <div class="space-y-1 break-words text-xs leading-5"><p class="font-medium">{{ approval.action }} {{ approval.target }}</p><p class="break-all text-slate-500">{{ approval.origin }}</p><p v-if="approval.frameHost" class="text-slate-500">Embedded site: {{ approval.frameHost }}</p><p v-if="approval.destinationHost" class="text-slate-500">Destination: {{ approval.destinationHost }}</p><p v-if="approval.intent">{{ approval.intent }}</p></div>
